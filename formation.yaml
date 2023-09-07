@@ -1,0 +1,458 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Parameters:
+  projectzaman4:
+    Type: String
+    Default: projectzaman4
+    Description: Name of the S3 bucket where Lambda function code and layers are located
+
+Resources:
+ 
+  WeatherUpcommingLamdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: weather_upcomming  # Fix the typo in the function name
+      Runtime: python3.11
+      Handler: "lambda_function.lambda_handler"
+      
+      Code:
+        S3Bucket: !Ref projectzaman4
+        S3Key: weather_upcomming.zip  # Fix the typo in the S3Key
+      Role: arn:aws:iam::038517842892:role/LabRole
+
+#    email need lamda 
+  WeatherEmailSubsLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: weather_email_subs
+      Runtime: python3.11
+      Handler: "lambda_function.lambda_handler"
+      Code:
+        S3Bucket: !Ref projectzaman4
+        S3Key: weather_email_subs.zip
+      Role: arn:aws:iam::038517842892:role/LabRole
+#    today lamda 
+  WeatherTodayLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: weather_today
+      Runtime: python3.11
+      Handler: "lambda_function.lambda_handler"
+      Code:
+        S3Bucket: !Ref projectzaman4
+        S3Key: weather_today.zip
+      Role: arn:aws:iam::038517842892:role/LabRole
+
+  # process lamda (no api needed )
+  ProcessWeatherDataLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: process_weather_data
+      Runtime: python3.11
+      Handler: "lambda_function.lambda_handler"
+      Code:
+        S3Bucket: !Ref projectzaman4
+        S3Key: process_weather_data.zip
+      Role: arn:aws:iam::038517842892:role/LabRole
+    DependsOn: WeatherQueueTriggerPolicy  # Ensure the trigger policy is created before the Lambda function
+
+  
+
+  WeatherQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: weather_queue
+
+  WeatherQueueTriggerPolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref WeatherQueue
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt WeatherQueue.Arn
+
+  WeatherQueueEventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      BatchSize: 1
+      Enabled: true
+      EventSourceArn: !GetAtt WeatherQueue.Arn
+      FunctionName: !Ref ProcessWeatherDataLambdaFunction
+
+  WeatherSubscriptionsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: weather_subscriptions
+      AttributeDefinitions:
+        - AttributeName: email
+          AttributeType: S
+      KeySchema:
+        - AttributeName: email
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+#----------------------------------------------------------------------------
+
+    
+#---------------------EMAIL API----done--------------------------
+  WeatherEmailSubscriptionApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: weather_email_subscription_api
+
+  LambdaEmailSubscriptionPermission:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      FunctionName: !Ref WeatherEmailSubsLambdaFunction
+      Action: "lambda:InvokeFunction"
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${WeatherEmailSubscriptionApi}/*/*"    
+
+  WeatherEmailResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref WeatherEmailSubscriptionApi
+      ParentId: !GetAtt WeatherEmailSubscriptionApi.RootResourceId
+      PathPart: "subscription"   
+
+  WeatherEmailGetMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref WeatherEmailSubscriptionApi
+      ResourceId: !Ref WeatherEmailResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${WeatherEmailSubsLambdaFunction.Arn}/invocations"
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseTemplates:
+              "application/json": "$input.json('$')"
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,POST,PUT,DELETE,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+        RequestTemplates:
+          "application/json": "$input.json('$')"
+      RequestParameters:
+        method.request.querystring.location: true
+        method.request.querystring.email: true
+      MethodResponses:
+        - ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+          StatusCode: "200"
+
+  WeatherEmailOptionMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref WeatherEmailSubscriptionApi
+      ResourceId: !Ref WeatherEmailResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              "method.response.header.Access-Control-Allow-Headers": "'Content-Type,X-Amz-Date,Authorization,X-Api-Key'"
+              "method.response.header.Access-Control-Allow-Methods": "'GET,OPTIONS,PUT,POST,DELETE'"
+              "method.response.header.Access-Control-Allow-Origin": "'*'"
+            ResponseTemplates:
+              "application/json": ""
+        PassthroughBehavior: WHEN_NO_MATCH
+        RequestTemplates:
+          "application/json": '{"statusCode": 200}'
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            "method.response.header.Access-Control-Allow-Headers": true
+            "method.response.header.Access-Control-Allow-Methods": true
+            "method.response.header.Access-Control-Allow-Origin": true
+          ResponseModels:
+            "application/json": "Empty"
+               
+
+  WeatherEmailDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: 
+      - WeatherEmailGetMethod
+    Properties:
+      RestApiId: !Ref WeatherEmailSubscriptionApi
+
+  WeatherEmailStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      RestApiId: !Ref WeatherEmailSubscriptionApi
+      DeploymentId: !Ref WeatherEmailDeployment
+      StageName: email
+      Description:  Stage    
+
+
+
+
+#----------------------------5  DAYS  APITOD----done---------------------------------------------------------
+  WeatherFiveDaysApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: weather_five_days_api
+
+  LambdaupcommingPermission:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      FunctionName: !Ref WeatherUpcommingLamdaFunction
+      Action: "lambda:InvokeFunction"
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${WeatherFiveDaysApi}/*/*"
+
+  WeatherFiveDaysResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref WeatherFiveDaysApi
+      ParentId: !GetAtt WeatherFiveDaysApi.RootResourceId
+      PathPart: "fivedays"
+
+  WeatherFiveDaysGetMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref WeatherFiveDaysApi
+      ResourceId: !Ref WeatherFiveDaysResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${WeatherUpcommingLamdaFunction.Arn}/invocations"
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseTemplates:
+              "application/json": "$input.json('$')"
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,POST,PUT,DELETE,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+        RequestTemplates:
+          "application/json": "$input.json('$')"
+      RequestParameters:
+        method.request.querystring.location: true
+      MethodResponses:
+        - ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+          StatusCode: "200"
+
+  WeatherUpcommingOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref WeatherFiveDaysApi
+      ResourceId: !Ref WeatherFiveDaysResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              "method.response.header.Access-Control-Allow-Headers": "'Content-Type,X-Amz-Date,Authorization,X-Api-Key'"
+              "method.response.header.Access-Control-Allow-Methods": "'GET,OPTIONS,PUT,POST,DELETE'"
+              "method.response.header.Access-Control-Allow-Origin": "'*'"
+            ResponseTemplates:
+              "application/json": ""
+        PassthroughBehavior: WHEN_NO_MATCH
+        RequestTemplates:
+          "application/json": '{"statusCode": 200}'
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            "method.response.header.Access-Control-Allow-Headers": true
+            "method.response.header.Access-Control-Allow-Methods": true
+            "method.response.header.Access-Control-Allow-Origin": true
+          ResponseModels:
+            "application/json": "Empty"
+         
+
+  WeatherFiveDaysDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: 
+        - WeatherFiveDaysGetMethod
+    Properties:
+      RestApiId: !Ref WeatherFiveDaysApi
+
+  WeatherUpCommingStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      RestApiId: !Ref WeatherFiveDaysApi
+      DeploymentId: !Ref WeatherFiveDaysDeployment
+      StageName: upcomming
+      Description:  Stage
+#-------------------------------------TODAY API-------done-----------------------------------------------------------------
+   
+  WeatherTodayApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: weather_today_api
+
+  LambdaTodayPermission:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      FunctionName: !Ref WeatherTodayLambdaFunction
+      Action: "lambda:InvokeFunction"
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${WeatherTodayApi}/*/*"    
+
+  WeatherTodayResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref WeatherTodayApi
+      ParentId: !GetAtt WeatherTodayApi.RootResourceId
+      PathPart: "today"
+
+  WeatherTodayGetMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref WeatherTodayApi
+      ResourceId: !Ref WeatherTodayResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${WeatherTodayLambdaFunction.Arn}/invocations"
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseTemplates:
+              "application/json": "$input.json('$')"
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,POST,PUT,DELETE,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+        RequestTemplates:
+          "application/json": "$input.json('$')"
+      RequestParameters:
+        method.request.querystring.location: true
+      MethodResponses:
+        - ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+          StatusCode: "200"
+
+  WeatherTodayOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref WeatherTodayApi
+      ResourceId: !Ref WeatherTodayResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              "method.response.header.Access-Control-Allow-Headers": "'Content-Type,X-Amz-Date,Authorization,X-Api-Key'"
+              "method.response.header.Access-Control-Allow-Methods": "'GET,OPTIONS,PUT,POST,DELETE'"
+              "method.response.header.Access-Control-Allow-Origin": "'*'"
+            ResponseTemplates:
+              "application/json": ""
+        PassthroughBehavior: WHEN_NO_MATCH
+        RequestTemplates:
+          "application/json": '{"statusCode": 200}'
+      MethodResponses:
+          - ResponseParameters:
+              "method.response.header.Access-Control-Allow-Headers": true
+              "method.response.header.Access-Control-Allow-Methods": true
+              "method.response.header.Access-Control-Allow-Origin": true
+            StatusCode: 200
+            ResponseModels:
+              "application/json": "Empty"
+          
+
+  WeatherTodayDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: 
+        - WeatherTodayGetMethod
+    Properties:
+      RestApiId: !Ref WeatherTodayApi
+
+  WeatherTodayStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      RestApiId: !Ref WeatherTodayApi
+      DeploymentId: !Ref WeatherTodayDeployment
+      StageName: oneday
+      Description: Production Stage
+    #-------------------------------------------------------------------------------
+  ProjectCloudEC2Instance: # Rename the resource to "ProjectCloudEC2Instance"
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t2.small
+      ImageId: ami-053b0d53c279acc90 #unu=053b0d53c279acc90   linux=0f34c5ae932e6f0e4
+      SecurityGroups:
+        - !Ref MySecurityGroup # Reference the security group created below
+      # IamInstanceProfile: "arn:aws:iam::038517842892:role/LabRole" # Use the ARN of the existing IAM role
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+
+            sudo apt update
+            sudo apt install -y docker.io
+            sudo systemctl start docker
+            sudo systemctl enable docker
+            sudo docker pull 01776901150/wp2:latest
+            sudo docker run -d --name wp_app -p 3000:3000 01776901150/wp2
+            #sudo docker run -d --name wp_app -p 3000:3000 -v /path/to/host/directory:/home/ubuntu/app 01776901150/wp2
+
+            sudo docker exec wp_app sh -c 'echo "REACT_APP_TO=${WeatherTodayApi}" >> /home/ubuntu/app/.env'
+            sudo docker exec wp_app sh -c 'echo "REACT_APP_UP=${WeatherFiveDaysApi}" >> /home/ubuntu/app/.env'
+            sudo docker exec wp_app sh -c 'echo "REACT_APP_EM=${WeatherEmailSubscriptionApi}" >> /home/ubuntu/app/.env'
+       
+      
+  MySecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: My security group
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22 # Replace with the desired port number for SSH
+          ToPort: 22   # Replace with the same port number as FromPort for a single port
+          CidrIp: 0.0.0.0/0 # Replace with the desired CIDR range for inbound SSH traffic
+        - IpProtocol: tcp
+          FromPort: 80 # Allow inbound HTTP traffic
+          ToPort: 80
+          CidrIp: 0.0.0.0/0 # Replace with the desired CIDR range for inbound HTTP traffic
+        - IpProtocol: tcp
+          FromPort: 443 # Allow inbound HTTPS traffic
+          ToPort: 443
+          CidrIp: 0.0.0.0/0 # Replace with the desired CIDR range for inbound HTTPS traffic
+        - IpProtocol: tcp
+          FromPort: 3000 # Port range start
+          ToPort: 3000   # Port range end
+          CidrIp: 0.0.0.0/0 # Allow traffic from any source on port 3000
+  
+Outputs:
+  ApiGatewayTodayApiURL:
+      Value: !Sub "https://${WeatherTodayApi}.execute-api.${AWS::Region}.amazonaws.com/oneday/today"
+ 
+  ApiGatewayUpcommingApiURL:
+      Value: !Sub "https://${WeatherFiveDaysApi}.execute-api.${AWS::Region}.amazonaws.com/upcomming/fivedays"
+  
+  ApiGatewaySubscribtionApiURL:
+      Value: !Sub "https://${WeatherEmailSubscriptionApi}.execute-api.${AWS::Region}.amazonaws.com/email/subscription"
+        
+  AppPort:
+      Description: Port number the app is listening on
+      Value: 3000
+  EC2PublicIP:
+      Description: Public IP address of the EC2 instance
+      Value: !GetAtt ProjectCloudEC2Instance.PublicIp
